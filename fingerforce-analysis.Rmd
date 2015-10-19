@@ -1,0 +1,269 @@
+---
+title: "Analysis of finger/symbol experiment"
+author: "Alexander D Forrence"
+date: "September 28, 2015"
+output: html_document
+---
+
+
+```{r, message = FALSE, warning = FALSE}
+setwd("C:/Users/aforr_000/Desktop/lab-materials/force-analysis")
+
+
+library(arm)
+library(boot)
+library(dplyr)
+library(ggplot2)
+library(nlme)
+library(psyphy)
+library(zoo)
+
+blks <- list()
+blknames <- list.files('csvfiles')
+i <- 1
+for (file in blknames) {
+    blks[[i]] <- read.csv(paste0('csvfiles/',file), header = TRUE)
+    i <- i + 1
+}
+
+#dplyr version
+all_blks <- blks %>%
+    bind_rows() %>%
+    na.omit() %>%
+    mutate(success = ifelse(targ_finger == press_finger, 1, 0)) %>%
+    mutate(RT = t_press - t_stim) %>%
+    filter(RT > 0) %>%
+    add_rownames(var = 'ind') %>%
+    mutate(ind = as.numeric(ind)) %>%
+    arrange(RT) %>%
+    mutate(cond = ifelse(t_stim == 0.75, 'prac', 'var'))
+
+```
+
+## Looking at the raw data
+
+```{r, fig.height = 5,echo=FALSE}
+ggplot(all_blks, aes(x = ind, y = RT, color = factor(success))) + 
+    geom_point(alpha = .6) + 
+    facet_wrap(~day, scales = "free_x")
+```
+
+```{r, fig.height = 5,echo=FALSE}
+ggplot(all_blks, 
+       aes(x = RT, y = factor(targ_finger), 
+           color = factor(press_finger))) + 
+    geom_jitter(alpha = .6) + 
+    facet_wrap(~day)
+
+```
+
+The `glm` function uses iteratively reweighted least squares (IRLS) to find a maximum likelihood solution.
+
+```{r,warning = FALSE,message = FALSE}
+df <- filter(all_blks, cond == "var" & day > 1)
+df_roll <- data.frame(roll_succ = rollmean(df$success, 70),
+                      roll_rt = rollmean(df$RT, 70))
+m0 <- glm(success ~ RT,
+          data = df,
+          family = binomial(psyphy::mafc.probit(4)))
+m2 <- update(m0, . ~ 0 + RT * factor(day))
+```
+
+For some reason, profiling the likelihood doesn't work properly. Maybe `profile.glm` from MASS doesn't deal with "custom" link functions properly?
+
+```{r}
+summary(m2)
+```
+
+RT on the x axis, P(success) on the y, fit cumulative gaussian
+
+TODO: fit cumulative gaussian w/ boundaries (via mle2 in bbmle?)
+
+## Examining the effect of days (could we do it block-by-block?)
+
+Below are the "raw" data, along with the success plotted by reaction time.
+
+```{r,echo=FALSE}
+
+df$resp2 <- predict(m2, type = "response")
+
+df_roll <- list()
+days <- 2:5
+for (i in 1:4) {
+    tempdf <- df %>% 
+        filter(day == days[i]) %>%
+        arrange(RT)
+    
+    df_roll[[i]] <- data.frame(
+        success = rollmean(tempdf$success, 70),
+        RT = rollmean(tempdf$RT, 70),
+        day = days[i]
+    )
+}
+
+df_roll <- bind_rows(df_roll)
+
+ggplot(df, 
+       aes(RT, press_finger, 
+           colour = factor(targ_finger))) + 
+    geom_jitter(size = 2.3, width = .1,
+                height = .2, alpha = .6) +
+    labs(x = "Reaction Time (s)", 
+         y = "Target Finger",
+         colour = "Digit\ndigit")
+
+ggpsych <- ggplot(data = df, aes(x = RT, y = success)) + 
+    geom_line(aes(y = resp2, 
+                  colour = "factor(days) GLM"),
+              size = 1.5, alpha = 0.6) + 
+    geom_line(data = df_roll, 
+              aes(RT, success, 
+                  colour = "Rolling mean"), 
+              size = 1.5) +
+    geom_point(aes(colour = "Raw Values"), size = 2, shape = 124) +
+    facet_wrap(~day)
+
+ggpsych
+```
+
+## Autocorrelation in the response?
+
+```{r,echo=FALSE}
+df2 <- df %>% arrange(ind) #rearrange by index
+acf(df2$press_finger, ci.type = "ma")
+    
+```
+
+But there doesn't seem to be much in the response residuals of the model (maybe due to the lack of data?)
+
+```{r,echo=FALSE}
+
+acf(resid(m2, type = "response"))
+
+```
+
+## Bootstrapping the midpoint
+
+```{r, message = FALSE, warning = FALSE}
+
+glmfit <- function(data,indices) {
+    fit <- glm(success ~ 0 + RT * factor(day), 
+               data = data[indices,], 
+               family = binomial(psyphy::mafc.probit(4)))
+    temp <- coef(fit)
+    # -b0/b1 for each day
+    b <- c(0, 0, 0, 0)
+    b[1] <- -temp[2] / temp[1]
+    b[2] <- -temp[3] / (temp[1] + temp[6])
+    b[3] <- -temp[4] / (temp[1] + temp[7])
+    b[4] <- -temp[5] / (temp[1] + temp[8])
+    return(b)
+}
+
+set.seed(1)
+
+bb <- boot(data = df, statistic = glmfit, R = 100)
+
+boots <- t(sapply(X = 1:4,
+                  FUN = function(x) boot.ci(bb, index = x, type = "perc")$percent))
+boots <- data.frame(day = 2:5, orig = bb$t0, 
+                    lowci = boots[,4], hici = boots[,5])
+boots
+
+```
+
+```{r,echo=FALSE}
+zz <- ggplot(boots, 
+       aes(x = day, 
+           y = orig, 
+           colour = factor(day))) + 
+    geom_errorbar(aes(ymin = lowci,ymax = hici),
+           size = 1, width = .1, alpha = .5) +
+    geom_point(size = 4) + 
+    theme_bw() + 
+    ylab("Mean (s)")
+zz
+ggpsych <- ggpsych + geom_vline(data = boots, 
+                     aes(xintercept = orig), 
+                     size = 1, alpha = .4)
+ggpsych
+```
+
+Using `stats::nls()`, which will give us something that looks more similar to the maximum likelihood:
+
+```{r}
+
+df <- df %>% arrange(day, RT)
+
+coefs <- list(mean = .4, sd = .1)
+mods <- nlsList(success ~ 1/4 + (1 - 1/4) * pnorm(RT, mean, sd)| day, 
+         data = df, 
+         start = coefs)
+
+
+df <- df %>% 
+    arrange(day, RT) %>% 
+    mutate(prednls = c(predict(mods, df)))
+
+ggplot(data = df, aes(x = RT, y = success)) + 
+    geom_line(aes(y = resp2, 
+                  colour = "factor(days) GLM"),
+              size = 1.5, alpha = 0.6) + 
+    geom_line(data = df_roll, 
+              aes(RT, success, 
+                  colour = "Rolling mean"), 
+              size = 1.5) +
+    geom_point(aes(colour = "Raw Values"),
+               size = 2, shape = 124) + 
+    geom_line(data = df, 
+              aes(x = RT, y = prednls, color = "NLS"),
+              size = 1.5, linetype = "dashed")+
+    facet_wrap(~day)
+   
+```
+
+Which gives pretty similar answers to the `glm`.
+
+```{r, echo = FALSE}
+summary(mods)
+```
+
+And profile confidence intervals on the mean:
+
+```{r, echo = FALSE}
+
+nlsconf <- data.frame(
+    t(sapply(X = mods, FUN = confint)[c(1,3,2,4),])
+)
+
+temp <- t(sapply(X = mods, FUN = coef))
+
+colnames(nlsconf) <- c("mean05", "mean95",
+                       "sd05", "sd95")
+nlsconf$meancoef <- temp[,1]
+nlsconf$sdcoef <- temp[,2]
+nlsconf$day <- 2:5
+nlsconf <- nlsconf[,c(7,5,6,1,2,3,4)]
+
+zz + 
+    geom_point(data = nlsconf, aes(x = day + .15, y = meancoef),
+               size = 4, color = 'black') + 
+    geom_errorbar(data = nlsconf, 
+                  aes(x = day + .15, y = NULL, ymax = mean95, ymin = mean05), 
+                  colour = "black", size = 1, width = .1)
+```
+
+I couldn't get the new legend worked out, but the black is the estimate based on the profile confidence intervals from `nls`, and the colorful ones are the bootstrapped intervals from the `glm`.
+
+I also didn't work out the equivalent of `sd` in the bootstrapped version, but the profile nls can be found below.
+
+```{r, echo = FALSE}
+
+ggplot(nlsconf, aes(x = day, y = sdcoef, color = factor(day))) + 
+    geom_point(size = 4) + 
+    geom_errorbar(aes(ymin = sd05, ymax = sd95), size = 1, width = .1) + 
+    theme_bw()
+
+```
+
+It looks like Michael leveled out (more or less) by day 3 - 4.
