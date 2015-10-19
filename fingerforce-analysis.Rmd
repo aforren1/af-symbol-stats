@@ -162,7 +162,7 @@ glmfit <- function(data,indices) {
 
 set.seed(1)
 
-bb <- boot(data = df, statistic = glmfit, R = 100)
+bb <- boot(data = df, statistic = glmfit, R = 1000)
 
 boots <- t(sapply(X = 1:4,
                   FUN = function(x) boot.ci(bb, index = x, type = "perc")$percent))
