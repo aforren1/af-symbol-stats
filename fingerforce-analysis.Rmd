@@ -245,15 +245,25 @@ nlsconf$sdcoef <- temp[,2]
 nlsconf$day <- 2:5
 nlsconf <- nlsconf[,c(7,5,6,1,2,3,4)]
 
-zz + 
-    geom_point(data = nlsconf, aes(x = day + .15, y = meancoef),
-               size = 4, color = 'black') + 
+ggplot(boots, 
+       aes(x = day, 
+           y = orig, 
+           colour = "Bootstrapped GLM Est.")) + 
+    geom_errorbar(aes(ymin = lowci,ymax = hici),
+           size = 1, width = .1, alpha = .5) +
+    geom_point(size = 4) + 
+    theme_bw() + 
+    ylab("Mean (s)") + 
+    geom_point(data = nlsconf, 
+               aes(x = day + .15, y = meancoef,
+                   colour = "Profiled NLS Est."),
+               size = 4) + 
     geom_errorbar(data = nlsconf, 
-                  aes(x = day + .15, y = NULL, ymax = mean95, ymin = mean05), 
-                  colour = "black", size = 1, width = .1)
+                  aes(x = day + .15, y = NULL,
+                      ymax = mean95, ymin = mean05,
+                   colour = "Profiled NLS Est."), 
+                  size = 1, width = .1)
 ```
-
-I couldn't get the new legend worked out, but the black is the estimate based on the profile confidence intervals from `nls`, and the colorful ones are the bootstrapped intervals from the `glm`.
 
 I also didn't work out the equivalent of `sd` in the bootstrapped version, but the profile nls can be found below.
 
